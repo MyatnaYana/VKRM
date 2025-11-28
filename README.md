@@ -1,5 +1,7 @@
 # Шпаргалка по командам и коду
 
+
+# Создание одного узла
 ```
 # Create a single node
 with driver.session() as session:
@@ -20,6 +22,8 @@ with driver.session() as session:
     print(f"Created node: {record['e']}")
 ```
 
+
+# Создание нескольких узлов
 ```
 # Create multiple nodes
 employees = [
@@ -41,6 +45,8 @@ with driver.session() as session:
     print(f"Created {len(employees)} employee nodes")
 ```
 
+
+# Создание связи между узлами
 ```
 with driver.session() as session:
     # Create two nodes and relationship
@@ -63,6 +69,7 @@ with driver.session() as session:
 ```
 
 
+# Вывод всех узлов
 ```
 with driver.session() as session:
     # Find all employee nodes
@@ -70,4 +77,8 @@ with driver.session() as session:
         MATCH (e:Employee)
         RETURN e.employee_id, e.name, e.department
         ORDER BY e.name
+    """)
+    
+    for record in result:
+        print(f"ID: {record['e.employee_id']}, Name: {record['e.name']}, Department: {record['e.department']}")
 ```
