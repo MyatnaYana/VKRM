@@ -1,0 +1,11 @@
+digraph G {
+    subgraph cluster_0 {
+        style=filled;
+        color=lightgrey;
+        node [style=filled,color=white];
+        A -> B;
+        B -> C;
+        label = "Cluster 0";
+    }
+    A -> C;
+}
