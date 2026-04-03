@@ -1,5 +1,5 @@
-from db import Neo4jConnector
-from agent import Agent
+from Extra.db import Neo4jConnector
+from Extra.agent import Agent
 
 # Настройки соединения
 URI = "neo4j://127.0.0.1:7687"
