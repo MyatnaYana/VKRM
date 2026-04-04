@@ -1,65 +1,155 @@
+"""
+Навигатор агента по сценарной сети (граф переходов в Neo4j).
+
+Объединяет эмоциональную и этическую модели для принятия решений.
+На каждом шаге навигации:
+  1. Вычисляется ΣΔE для всех доступных рёбер (эмоции + этика)
+  2. Выбирается ребро с минимальным ΣΔE
+  3. Применяются обновления из ребра (update_em_*, update_eth_*)
+  4. Применяются TSK-правила обеих моделей (~20 эмоциональных + 4–10 этических)
+"""
+
+from typing import Dict, List, Tuple, Optional
 from neo4j import GraphDatabase
 
+from emotional_model import EmotionalModel, get_peak
+from ethical_model import EthicalModel
+
+
 class AgentNavigator:
-    def __init__(self, uri, user, password):
+    """
+    Навигатор агента по сценарной сети.
+
+    Использует комбинированный критерий ΣΔE = ΣΔE_emotional + ΣΔE_ethical
+    для выбора оптимального ребра на каждом шаге.
+    """
+
+    def __init__(self, uri: str, user: str, password: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        self.agent = {}
-        self.path = []
+        self.emotional_model = EmotionalModel()
+        self.ethical_model = EthicalModel()
+        self.path: List[Tuple] = []
 
     def close(self):
         self.driver.close()
 
-    def _get_peak(self, tri):
-        # Return the peak (b) of a triangular membership function Tri(a, b, c)
-        return float(tri[1]) if isinstance(tri, list) and len(tri) == 3 else 0.0
+    # ── Инициализация агента ───────────────────────────────────────
 
-    def init_agent_from_node(self, start_id: str):
-        # Initialize agent characteristics from the starting node in Neo4j
+    def init_from_node(self, start_id: str):
+        """Загрузить начальные характеристики агента из узла Neo4j."""
         with self.driver.session() as session:
-            rec = session.run("MATCH (s:State {id: $id}) RETURN s", id=start_id).single()
-            node = rec['s']
-            self.agent = {k: self._get_peak(v) for k, v in node.items()
-                          if k.startswith(('emotion_', 'ethic_'))}
+            rec = session.run(
+                "MATCH (s:State {id: $id}) RETURN s", id=start_id
+            ).single()
+            if rec is None:
+                raise ValueError(f"Узел {start_id} не найден в базе данных")
+            node_props = dict(rec['s'])
+            self.emotional_model.load_from_node(node_props)
+            self.ethical_model.load_from_node(node_props)
 
-    def set_custom_agent(self, custom: dict):
-        # Override only the required characteristics
-        self.agent.update(custom)
-        print(f"Custom agent loaded ({len(custom)} parameters changed)")
+    def set_custom_params(self, custom: dict):
+        """
+        Установить пользовательские параметры агента.
+        Ключи вида emotion_* и ethic_* распределяются по моделям.
+        """
+        emotion_params = {k: v for k, v in custom.items() if k.startswith('emotion_')}
+        ethic_params = {k: v for k, v in custom.items() if k.startswith('ethic_')}
 
-    def _compute_deviation(self, edge_props: dict) -> float:
-        # Calculate ΣΔE — sum of absolute deviations from all constraints
-        total = 0.0
-        for key, value in edge_props.items():
-            if key.startswith('cond_em_') and (key.endswith('_le') or key.endswith('_ge')):
-                prop = 'emotion_' + key[8:-3]
-                agent_val = self.agent.get(prop, 0.0)
-                total += abs(self._get_peak(value) - agent_val)
-            elif key.startswith('cond_eth_') and (key.endswith('_le') or key.endswith('_ge')):
-                prop = 'ethic_' + key[9:-3]
-                agent_val = self.agent.get(prop, 0.0)
-                total += abs(self._get_peak(value) - agent_val)
-        return round(total, 3)
+        if emotion_params:
+            self.emotional_model.set_values(emotion_params)
+            print(f"  Загружено {len(emotion_params)} эмоциональных параметров")
+        if ethic_params:
+            self.ethical_model.set_values(ethic_params)
+            print(f"  Загружено {len(ethic_params)} этических параметров")
 
-    def _apply_updates(self, edge_props: dict):
-        # Apply all update_ fields to the agent's characteristics
-        for key, delta in edge_props.items():
-            if key.startswith('update_em_'):
-                prop = 'emotion_' + key[10:]
-                self.agent[prop] = self.agent.get(prop, 0.0) + float(delta)
-            elif key.startswith('update_eth_'):
-                prop = 'ethic_' + key[11:]          # ← FIXED
-                self.agent[prop] = self.agent.get(prop, 0.0) + float(delta)
+    # ── Вычисление отклонений ──────────────────────────────────────
 
-    def navigate(self, start_id: str = 'V0', custom_peaks: dict = None):
-        # Main navigation loop through the scenario network
-        if custom_peaks:
-            self.set_custom_agent(custom_peaks)
-        else:
-            self.init_agent_from_node(start_id)
+    def compute_total_deviation(self, edge_props: dict) -> Tuple[float, float, float]:
+        """
+        Вычислить комбинированный критерий ΣΔE = ΣΔE_em + ΣΔE_eth.
+        Возвращает (total, emotional_part, ethical_part).
+        """
+        em_dev = self.emotional_model.compute_deviation(edge_props)
+        eth_dev = self.ethical_model.compute_deviation(edge_props)
+        return (round(em_dev + eth_dev, 3), round(em_dev, 3), round(eth_dev, 3))
+
+    # ── Применение обновлений ──────────────────────────────────────
+
+    def apply_all_updates(self, edge_props: dict, verbose: bool = False):
+        """
+        Применить все обновления после выбора ребра:
+          1. Обновления из свойств ребра (update_em_*, update_eth_*)
+          2. TSK-правила эмоциональной модели (~20 правил)
+          3. TSK-правила этической модели (4–10 правил)
+        """
+        # Шаг 1: обновления из ребра
+        self.emotional_model.apply_edge_updates(edge_props)
+        self.ethical_model.apply_edge_updates(edge_props)
+
+        # Шаг 2: TSK-правила эмоциональной модели
+        em_deltas = self.emotional_model.apply_tsk_rules(verbose=verbose)
+        if verbose and em_deltas:
+            print(f"  Δ эмоций (TSK): {em_deltas}")
+
+        # Шаг 3: TSK-правила этической модели
+        eth_deltas = self.ethical_model.apply_tsk_rules(verbose=verbose)
+        if verbose and eth_deltas:
+            print(f"  Δ этики (TSK):  {eth_deltas}")
+
+    # ── Получение состояния ────────────────────────────────────────
+
+    def get_full_state(self) -> Dict[str, float]:
+        """Получить полное состояние агента (эмоции + этика)."""
+        state = {}
+        state.update(self.emotional_model.get_all())
+        state.update(self.ethical_model.get_all())
+        return state
+
+    def get_nonzero_state(self) -> Dict[str, float]:
+        """Получить ненулевые характеристики."""
+        state = {}
+        state.update(self.emotional_model.get_nonzero())
+        state.update(self.ethical_model.get_nonzero())
+        return state
+
+    # ── Основной цикл навигации ────────────────────────────────────
+
+    def navigate(self, start_id: str = 'V0',
+                 custom_params: dict = None,
+                 verbose: bool = True) -> List[Tuple]:
+        """
+        Основной цикл навигации по сценарной сети.
+
+        Алгоритм:
+          1. Инициализация агента из узла или пользовательских параметров
+          2. Цикл: получить рёбра → вычислить ΣΔE → выбрать лучшее →
+             применить обновления + TSK правила → перейти
+          3. Вывод пройденного пути и финального состояния
+
+        Args:
+            start_id: идентификатор начального узла
+            custom_params: словарь пользовательских параметров (опционально)
+            verbose: выводить подробный лог
+
+        Returns:
+            Список шагов [(from_node, edge_id, to_node, total_dev), ...]
+        """
+        # ── Инициализация ──
+        self.init_from_node(start_id)
+        if custom_params:
+            self.set_custom_params(custom_params)
 
         current = start_id
         self.path = []
 
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"Начальное состояние агента (узел {start_id}):")
+            print(f"  Эмоции: {self.emotional_model.get_nonzero()}")
+            print(f"  Этика:  {self.ethical_model.get_nonzero()}")
+            print(f"{'='*60}")
+
+        # ── Цикл навигации ──
         while True:
             with self.driver.session() as session:
                 result = session.run("""
@@ -67,64 +157,68 @@ class AgentNavigator:
                     RETURN e, next.id AS next_id, e.id AS edge_id
                 """, current=current)
                 edges = list(result)
+
                 if not edges:
+                    if verbose:
+                        print(f"\n  Узел {current}: нет исходящих рёбер → КОНЕЦ")
                     break
 
+                # Вычисляем отклонения для всех рёбер
                 candidates = []
                 for rec in edges:
                     edge_props = dict(rec['e'])
-                    dev = self._compute_deviation(edge_props)
+                    total_dev, em_dev, eth_dev = self.compute_total_deviation(edge_props)
                     candidates.append({
                         'edge_id': rec['edge_id'],
                         'next_id': rec['next_id'],
-                        'sum_delta': dev,
-                        'props': edge_props
+                        'total_dev': total_dev,
+                        'em_dev': em_dev,
+                        'eth_dev': eth_dev,
+                        'props': edge_props,
                     })
 
-                print(f"\n=== From node {current} ===")
-                for c in sorted(candidates, key=lambda x: x['edge_id']):
-                    print(f"  {c['edge_id']} → {c['next_id']} : ΣΔE = {c['sum_delta']}")
+                # Вывод всех кандидатов
+                if verbose:
+                    print(f"\n=== Узел {current}: {len(candidates)} исходящих рёбер ===")
+                    for c in sorted(candidates, key=lambda x: x['edge_id']):
+                        print(f"  {c['edge_id']} → {c['next_id']} : "
+                              f"ΣΔE = {c['total_dev']} "
+                              f"(эмоции: {c['em_dev']}, этика: {c['eth_dev']})")
 
-                best = min(candidates, key=lambda x: x['sum_delta'])
-                print(f"→ SELECTED: {best['edge_id']} → {best['next_id']} (ΣΔE = {best['sum_delta']})")
+                # Выбираем лучшее ребро (минимальный ΣΔE)
+                best = min(candidates, key=lambda x: x['total_dev'])
 
-                self.path.append((current, best['edge_id'], best['next_id'], best['sum_delta']))
-                self._apply_updates(best['props'])
+                if verbose:
+                    print(f"→ ВЫБРАНО: {best['edge_id']} → {best['next_id']} "
+                          f"(ΣΔE = {best['total_dev']})")
+
+                # Записываем шаг
+                self.path.append((
+                    current,
+                    best['edge_id'],
+                    best['next_id'],
+                    best['total_dev']
+                ))
+
+                # Применяем обновления + TSK-правила
+                self.apply_all_updates(best['props'], verbose=verbose)
+
                 current = best['next_id']
 
-        # Final output
-        print("\n=== CHOSEN PATH ===")
-        for step in self.path:
-            print(f"{step[0]} --{step[1]}--> {step[2]} (ΣΔE = {step[3]})")
-        print("Agent characteristics at the end:",
-              {k: round(v, 3) for k, v in self.agent.items() if v != 0})
+        # ── Итоговый вывод ──
+        if verbose:
+            print(f"\n{'='*60}")
+            print("ПРОЙДЕННЫЙ ПУТЬ:")
+            for step in self.path:
+                print(f"  {step[0]} --{step[1]}--> {step[2]} (ΣΔE = {step[3]})")
 
+            path_str = " → ".join(
+                [self.path[0][0]] + [s[2] for s in self.path])
+            print(f"\nКраткий путь: {path_str}")
 
-if __name__ == "__main__":
-    URI = "neo4j+s://67842419.databases.neo4j.io"
-    USER = "67842419"
-    PASSWORD = "1bH9PGphIXQXqVNAkFTFEFkwXffBcK3ypTqQHAikcYU"            # ← replace if needed
+            print(f"\nФинальное состояние агента:")
+            print(f"  Эмоции: {self.emotional_model.get_nonzero()}")
+            print(f"  Этика:  {self.ethical_model.get_nonzero()}")
+            print(f"{'='*60}")
 
-    nav = AgentNavigator(URI, USER, PASSWORD)
-
-    # Scenario 1: Highly Ethical Agent 
-    print("Scenario 1: Highly Ethical Agent")
-    nav.navigate('V0')
-
-    # Scenario 2: Low Ethical Agent 
-    print("\n\nScenario 2: Low Ethical Agent")
-    low_ethical = {
-        'emotion_joy': 0.62,
-        'emotion_fear': 0.3,
-        'emotion_sadness': 0.3,
-        'emotion_guilt': 0.3,
-        'emotion_anger': 0.3,
-        'ethic_responsibility': 0.4,
-        'ethic_goodness': 0.35,
-        'ethic_conscience': 0.3,
-        'ethic_evil': 0.5,
-        # others are taken from V0 automatically
-    }
-    nav.navigate('V0', custom_peaks=low_ethical)
-
-    nav.close()
+        return self.path
