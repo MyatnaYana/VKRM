@@ -3,7 +3,7 @@
 Исследование совместного влияния этических и эмоциональных моделей
 на поведение интеллектуального агента.
 
-ЗАДАНИЕ: Заполните блоки TODO для каждого эксперимента.
+Готовый файл со всеми выполненными экспериментами.
 
 Запуск:
     python main.py base    — базовый эксперимент
@@ -14,24 +14,21 @@
 """
 
 import sys
-from agent_navigator import AgentNavigator
 import copy
+from agent_navigator import AgentNavigator
+
 
 # ──────────────────────────────────────────────────────────────────────
-#  Подключение к Neo4j (замените на свои данные)
+#  Подключение к Neo4j
 # ──────────────────────────────────────────────────────────────────────
 
-URI = "ХХХХХХХХХХХ"
-USER = "ХХХХХХХХХХХ"
-PASSWORD = "ХХХХХХХХХХ"
+URI      = "neo4j+s://67842419.databases.neo4j.io"
+USER     = "67842419"
+PASSWORD = "1bH9PGphIXQXqVNAkFTFEFkwXffBcK3ypTqQHAikcYU"
 
 
 # ──────────────────────────────────────────────────────────────────────
 #  Профиль базового агента: высокоэтичный оптимист (из статьи, Table 2)
-#
-#  Каждая характеристика — треугольная функция принадлежности Tri(a, b, c),
-#  где b — пиковое значение (степень принадлежности = 1),
-#  a и c — левое и правое основания.
 # ──────────────────────────────────────────────────────────────────────
 
 BASE_AGENT = {
@@ -73,46 +70,26 @@ def run_base_experiment(nav: AgentNavigator):
 # ══════════════════════════════════════════════════════════════════════
 #  ЭКСПЕРИМЕНТ 1: Снижение этических ограничений
 # ══════════════════════════════════════════════════════════════════════
-#
-#  Создайте агента с изменёнными этическими параметрами:
-#    a_responsibility = Tri(0.2, 0.3, 0.4)
-#    a_goodness       = Tri(0.2, 0.3, 0.4)
-#    a_conscience     = Tri(0.2, 0.3, 0.4)
-#    a_justice        = Tri(0.2, 0.3, 0.4)
-#    a_fairness       = Tri(0.2, 0.3, 0.4)
-#    a_evil           = Tri(0.5, 0.6, 0.7)
-#  Эмоции — как в BASE_AGENT.
-# ══════════════════════════════════════════════════════════════════════
 
 def run_experiment_1(nav: AgentNavigator):
     print("\n" + "═"*70)
     print("  ЭКСПЕРИМЕНТ 1: Снижение этических ограничений")
     print("═"*70)
 
-    low_ethics_agent = {}  # TODO
-    
-    # TODO: Создайте профиль агента с низкой этикой
-    #
-    # Подсказка:
-    #   import copy
-    #   low_ethics_agent = copy.deepcopy(BASE_AGENT)
-    #   low_ethics_agent['ethic_responsibility'] = [0.2, 0.3, 0.4]
-    #   ...
+    low_ethics_agent = copy.deepcopy(BASE_AGENT)
+    low_ethics_agent['ethic_responsibility'] = [0.2, 0.3, 0.4]
+    low_ethics_agent['ethic_goodness']       = [0.2, 0.3, 0.4]
+    low_ethics_agent['ethic_conscience']     = [0.2, 0.3, 0.4]
+    low_ethics_agent['ethic_justice']        = [0.2, 0.3, 0.4]
+    low_ethics_agent['ethic_fairness']       = [0.2, 0.3, 0.4]
+    low_ethics_agent['ethic_evil']           = [0.5, 0.6, 0.7]
 
-
-    path = None  # TODO: nav.navigate('V0', low_ethics_agent)
+    path = nav.navigate('V0', low_ethics_agent)
     return path
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  ЭКСПЕРИМЕНТ 2: Усиление отрицательных эмоций
-# ══════════════════════════════════════════════════════════════════════
-#
-#  Создайте агента с базовой этикой, но изменёнными эмоциями:
-#    a_fear    = Tri(0.6, 0.7, 0.8)
-#    a_sadness = Tri(0.6, 0.7, 0.8)
-#    a_guilt   = Tri(0.5, 0.6, 0.7)
-#    a_joy     = Tri(0.1, 0.2, 0.3)
 # ══════════════════════════════════════════════════════════════════════
 
 def run_experiment_2(nav: AgentNavigator):
@@ -120,11 +97,13 @@ def run_experiment_2(nav: AgentNavigator):
     print("  ЭКСПЕРИМЕНТ 2: Усиление отрицательных эмоций")
     print("═"*70)
 
-    # TODO: Создайте профиль тревожного агента
+    anxious_agent = copy.deepcopy(BASE_AGENT)
+    anxious_agent['emotion_fear']    = [0.6, 0.7, 0.8]
+    anxious_agent['emotion_sadness'] = [0.6, 0.7, 0.8]
+    anxious_agent['emotion_guilt']   = [0.5, 0.6, 0.7]
+    anxious_agent['emotion_joy']     = [0.1, 0.2, 0.3]
 
-    anxious_agent = {}  # TODO
-
-    path = None  # TODO: nav.navigate('V0', anxious_agent)
+    path = nav.navigate('V0', anxious_agent)
     return path
 
 
@@ -141,18 +120,49 @@ def run_experiment_3(nav: AgentNavigator):
           f"{'Разность':>10} | Выбранный путь")
     print("-" * 65)
 
-    # TODO: Перебирайте значения пика responsibility от 0.8 до 0.3
-    #       с шагом 0.05.
-    #
-    # Для каждого значения peak:
-    #   1. agent = copy.deepcopy(BASE_AGENT)
-    #      agent['ethic_responsibility'] = [peak - 0.1, peak, peak + 0.1]
-    #   2. nav.init_agent(agent)
-    #   3. Получите рёбра из V0 через Neo4j
-    #   4. Вычислите ΣΔE для E1 и E2
-    #   5. Выведите строку таблицы
+    resp_values = [round(0.8 - i * 0.05, 2) for i in range(11)]
+    results = []
 
-    pass  # TODO
+    for peak in resp_values:
+        agent = copy.deepcopy(BASE_AGENT)
+        agent['ethic_responsibility'] = [peak - 0.1, peak, peak + 0.1]
+
+        nav.init_agent(agent)
+
+        with nav.driver.session() as session:
+            result = session.run("""
+                MATCH (s:State {id: 'V0'})-[e:TRANSITION]->(t:State)
+                RETURN e, t.id AS next_id, e.id AS edge_id
+            """)
+            edges = list(result)
+
+        deviations = {}
+        for rec in edges:
+            edge_props = dict(rec['e'])
+            total, em, eth = nav.compute_total_deviation(edge_props)
+            deviations[rec['edge_id']] = total
+
+        e1 = deviations.get('E1', 0)
+        e2 = deviations.get('E2', 0)
+        diff = e2 - e1
+        chosen = 'V0→V1 (E1)' if e1 <= e2 else 'V0→V2 (E2)'
+
+        print(f"{peak:>8.2f} | {e1:>8.3f} | {e2:>8.3f} | "
+              f"{diff:>+10.3f} | {chosen}")
+        results.append((peak, e1, e2, diff))
+
+    print("\n" + "-" * 65)
+    for i in range(1, len(results)):
+        if results[i-1][3] * results[i][3] < 0:
+            threshold = (results[i-1][0] + results[i][0]) / 2
+            print(f"  Порог переключения: a_responsibility ≈ {threshold:.3f}")
+            break
+    else:
+        if results and results[0][3] == 0:
+            print(f"  Равновесие при a_responsibility = {results[0][0]}")
+        elif results:
+            sign = "E1" if results[-1][3] > 0 else "E2"
+            print(f"  Путь через {sign} оптимален во всём диапазоне")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -172,7 +182,7 @@ if __name__ == "__main__":
         print()
         print("Доступные эксперименты:")
         for key, (name, _) in EXPERIMENTS.items():
-            print(f"  python main.py {key:>3}  — {name}")
+            print(f"  python main.py {key:>4}  — {name}")
         print(f"  python main.py  all  — все эксперименты")
         sys.exit(0)
 
