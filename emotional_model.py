@@ -168,6 +168,10 @@ class EmotionalModel:
     def __init__(self):
         self.state: Dict[str, List[float]] = {e: list(ZERO_TRI) for e in ALL_EMOTIONS}
         self.rules = EMOTION_TSK_RULES
+        # Список (rule_id, w, description) — заполняется на каждом apply_tsk_rules.
+        # Используется внешними интерфейсами (Streamlit и т. п.) для отображения
+        # активированных правил без перехвата stdout.
+        self.last_activations: List[Tuple[str, float, str]] = []
 
     def set_values(self, values: dict):
         """Установить значения эмоций из словаря {emotion_<n>: [a,b,c] или float}."""
@@ -189,6 +193,18 @@ class EmotionalModel:
         """Получить ненулевые эмоции в формате Tri(a, b, c)."""
         return {f'emotion_{k}': format_tri(v)
                 for k, v in self.state.items() if v[1] > 1e-6}
+
+    def as_table(self) -> List[Tuple[str, float, float, float, float]]:
+        """
+        Табличное представление состояния для UI/логов.
+        Возвращает список (name, a, b, c, peak) по всем 20 эмоциям
+        в порядке `ALL_EMOTIONS`.
+        """
+        rows = []
+        for name in ALL_EMOTIONS:
+            tri = self.state.get(name, ZERO_TRI)
+            rows.append((name, float(tri[0]), float(tri[1]), float(tri[2]), float(tri[1])))
+        return rows
 
     # ── TSK-вывод ──────────────────────────────────────────────────
 
@@ -217,11 +233,13 @@ class EmotionalModel:
         weighted_outputs: Dict[str, float] = {}
         weight_sums: Dict[str, float] = {}
         rule_log = []
+        self.last_activations = []
 
         for rule in self.rules:
             w = self._compute_rule_activation(rule)
             if w < 1e-6:
                 continue
+            self.last_activations.append((rule['id'], round(w, 4), rule['description']))
             if verbose:
                 rule_log.append(f"  {rule['id']}: w={w:.4f} — {rule['description']}")
             for emotion_name in rule['consequents']:

@@ -3,6 +3,7 @@
 venv/ 
 
 lib/
+.streamlit/secrets.toml
 
 # Git 
 .git

@@ -7,7 +7,7 @@
 На каждом шаге применяется от 4 до 10 TSK-правил.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from emotional_model import (tri_membership, get_peak, make_tri, shift_tri,
                               format_tri, ZERO_TRI)
 
@@ -87,6 +87,10 @@ class EthicalModel:
     def __init__(self):
         self.state: Dict[str, List[float]] = {e: list(ZERO_TRI) for e in ALL_ETHICS}
         self.rules = ETHIC_TSK_RULES
+        # Список (rule_id, w, description, priority) — заполняется на каждом
+        # apply_tsk_rules. Используется внешними интерфейсами (Streamlit и т. п.)
+        # для отображения активированных правил с иерархией приоритетов.
+        self.last_activations: List[Tuple[str, float, str, int]] = []
 
     def set_values(self, values: dict):
         """Установить значения из словаря {ethic_<n>: [a,b,c] или float}."""
@@ -106,6 +110,18 @@ class EthicalModel:
     def get_nonzero(self) -> Dict[str, str]:
         return {f'ethic_{k}': format_tri(v)
                 for k, v in self.state.items() if v[1] > 1e-6}
+
+    def as_table(self) -> List[Tuple[str, float, float, float, float]]:
+        """
+        Табличное представление состояния для UI/логов.
+        Возвращает список (name, a, b, c, peak) по всем 7 этическим
+        переменным в порядке `ALL_ETHICS`.
+        """
+        rows = []
+        for name in ALL_ETHICS:
+            tri = self.state.get(name, ZERO_TRI)
+            rows.append((name, float(tri[0]), float(tri[1]), float(tri[2]), float(tri[1])))
+        return rows
 
     # ── TSK-вывод с иерархией ──────────────────────────────────────
 
@@ -130,13 +146,16 @@ class EthicalModel:
         weighted_outputs: Dict[str, float] = {}
         weight_sums: Dict[str, float] = {}
         rule_log = []
+        self.last_activations = []
 
         for rule in rules_by_priority:
             w = self._compute_rule_activation(rule)
             if w < 1e-6:
                 continue
-            priority_label = {1: 'ВЫСШИЙ', 2: 'СРЕДНИЙ', 3: 'БАЗОВЫЙ'}.get(
-                rule.get('priority', 3), '?')
+            priority = rule.get('priority', 3)
+            priority_label = {1: 'ВЫСШИЙ', 2: 'СРЕДНИЙ', 3: 'БАЗОВЫЙ'}.get(priority, '?')
+            self.last_activations.append(
+                (rule['id'], round(w, 4), rule['description'], priority))
             if verbose:
                 rule_log.append(
                     f"  {rule['id']} [{priority_label}]: w={w:.4f} — {rule['description']}")
