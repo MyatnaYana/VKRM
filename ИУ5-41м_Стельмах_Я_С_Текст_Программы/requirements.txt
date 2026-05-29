@@ -1,0 +1,14 @@
+# Зависимости для интерактивного Streamlit-приложения (app.py)
+# и трёх рабочих модулей (agent_navigator, emotional_model, ethical_model).
+#
+# Установка:
+#   pip install -r requirements.txt
+#
+# Запуск приложения:
+#   streamlit run app.py
+
+neo4j==6.0.2
+streamlit>=1.32
+pyvis>=0.3.2
+pandas>=2.0
+streamlit>=1.50.0
