@@ -3,7 +3,11 @@
 
 Агент приходит в сценарную сеть с предзагруженными моделями этики и эмоций.
 Характеристики агента — треугольные функции принадлежности Tri(a, b, c).
-Узлы сети описывают события, а не характеристики агента.
+Узлы сети описывают ситуации (события); попадая в новую ситуацию, агент
+реагирует на её последствия: к его характеристикам применяются обновления
+`update_em_*` / `update_eth_*`, заданные на узле, после чего срабатывают
+TSK-правила обеих моделей. Рёбра описывают действия с условиями перехода
+и барьерами активации (и могут нести собственные обновления).
 """
 
 import random
@@ -41,6 +45,10 @@ class StepResult:
     eth_deltas: Dict[str, float] = field(default_factory=dict)
     em_activations: List[Tuple[str, float, str]] = field(default_factory=list)
     eth_activations: List[Tuple[str, float, str, int]] = field(default_factory=list)
+    admissible: List[dict] = field(default_factory=list)  # рёбра, прошедшие проверку условий
+    mode: str = 'combined'                      # режим выбора: 'combined'
+    sem: float = 0.0                            # общее эмоциональное состояние (режим барьеров)
+    seth: float = 0.0                           # этическая оценка (режим барьеров)
 
 
 class AgentNavigator:
@@ -51,14 +59,22 @@ class AgentNavigator:
     Все характеристики хранятся как Tri(a, b, c).
     """
 
-    def __init__(self, uri: str, user: str, password: str):
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+    # Барьер активации по умолчанию для рёбер без свойства 'barrier'
+    DEFAULT_BARRIER: float = 1.0
+
+    def __init__(self, uri: Optional[str] = None, user: Optional[str] = None,
+                 password: Optional[str] = None):
+        # uri=None позволяет создать навигатор без подключения к Neo4j —
+        # это используется в офлайн-тестах, где рёбра подаются вручную.
+        self.driver = (GraphDatabase.driver(uri, auth=(user, password))
+                       if uri else None)
         self.emotional_model = EmotionalModel()
         self.ethical_model = EthicalModel()
         self.path: List[Tuple] = []
 
     def close(self):
-        self.driver.close()
+        if self.driver is not None:
+            self.driver.close()
 
     # ── Инициализация агента ───────────────────────────────────────
 
@@ -130,20 +146,65 @@ class AgentNavigator:
                 details.append((ethic_name, req_peak, agent_peak, round(dev, 3)))
         return details
 
+    # ── Проверка условий перехода (неравенства ≤ / ≥) ──────────────
+
+    def check_edge_conditions(self, edge_props: dict) -> Tuple[bool, List[str]]:
+        """
+        Проверить выполнение ВСЕХ условий перехода ребра.
+
+        Условия задаются свойствами `cond_em_<имя>_le|_ge` и
+        `cond_eth_<имя>_le|_ge`: суффикс `_le` требует, чтобы пик
+        характеристики агента был ≤ пика ограничения, `_ge` — ≥.
+
+        Согласно теоретическому описанию, агент сначала отбирает рёбра,
+        для которых выполняются все неравенства, и лишь среди них
+        минимизирует сумму отклонений ΣΔE.
+
+        Возвращает (все_условия_выполнены, список_нарушенных_условий),
+        где нарушенные условия описаны строками вида
+        'fear: 0.45 > 0.3 (≤)'.
+        """
+        failed: List[str] = []
+        eps = 1e-9
+        for key, value in edge_props.items():
+            if key.startswith('cond_em_') and (key.endswith('_le') or key.endswith('_ge')):
+                name = key[8:-3]
+                agent_peak = self.emotional_model.get_peak(name)
+            elif key.startswith('cond_eth_') and (key.endswith('_le') or key.endswith('_ge')):
+                name = key[9:-3]
+                agent_peak = self.ethical_model.get_peak(name)
+            else:
+                continue
+            req_peak = get_peak(value)
+            if key.endswith('_le') and agent_peak > req_peak + eps:
+                failed.append(f"{name}: {agent_peak:.3f} > {req_peak:.3f} (≤)")
+            elif key.endswith('_ge') and agent_peak < req_peak - eps:
+                failed.append(f"{name}: {agent_peak:.3f} < {req_peak:.3f} (≥)")
+        return (len(failed) == 0, failed)
+
     # ── Применение обновлений ──────────────────────────────────────
 
-    def apply_all_updates(self, edge_props: dict, verbose: bool = False
+    def apply_all_updates(self, edge_props: dict, verbose: bool = False,
+                          node_props: Optional[dict] = None
                           ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """
         Применить обновления после выбора ребра:
-          1. Обновления из ребра (сдвиг Tri на delta)
-          2. TSK-правила эмоциональной модели
-          3. TSK-правила этической модели
+          1. Обновления из ребра (сдвиг Tri на delta) — если заданы
+          2. Обновления из ДОСТИГНУТОГО узла: агент реагирует на новую
+             ситуацию, получая изменения характеристик (update_em_*/update_eth_*
+             в свойствах узла)
+          3. TSK-правила эмоциональной модели
+          4. TSK-правила этической модели
 
         Возвращает (em_deltas, eth_deltas).
         """
         self.emotional_model.apply_edge_updates(edge_props)
         self.ethical_model.apply_edge_updates(edge_props)
+
+        # Реакция агента на ситуацию достигнутого узла
+        if node_props:
+            self.emotional_model.apply_edge_updates(node_props)
+            self.ethical_model.apply_edge_updates(node_props)
 
         em_deltas = self.emotional_model.apply_tsk_rules(verbose=verbose)
         if verbose and em_deltas:
@@ -165,79 +226,104 @@ class AgentNavigator:
 
     # ── Один шаг навигации (для интерактивных режимов) ─────────────
 
-    def step(self, current_id: str, verbose: bool = False) -> Optional[StepResult]:
+    def build_candidates(self, edges: List[Tuple]) -> List[dict]:
         """
-        Выполнить ОДИН шаг навигации из узла `current_id`.
+        Построить список рёбер-кандидатов из «сырых» рёбер.
 
-        Алгоритм:
-          1. Cypher-запрос исходящих рёбер `(:State {id})-[:TRANSITION]->(:State)`.
-          2. Для каждого ребра — `compute_total_deviation` и `compute_deviation_details`.
-          3. Минимум по ΣΔE; ничьи разрешаются `random.choice`.
-          4. Запись шага в `self.path`.
-          5. `apply_all_updates` (рёберные сдвиги + TSK эмоций + TSK этики).
+        Args:
+            edges: список (edge_id, next_id, edge_props) либо
+                   (edge_id, next_id, edge_props, next_props), где
+                   next_props — свойства целевого узла (включая его
+                   обновления update_em_*/update_eth_*)
 
-        Возвращает `StepResult` или `None`, если из узла нет исходящих рёбер.
-        Не молчит при verbose=True — печатает кандидатов и выбор в том же
-        стиле, что и `navigate()`.
+        Для каждого ребра вычисляются ΣΔE (с разбивкой на эмоциональную
+        и этическую части), допустимость (выполнение всех неравенств
+        условий перехода) и барьер активации β.
         """
-        with self.driver.session() as session:
-            result = session.run("""
-                MATCH (current:State {id: $current})-[e:TRANSITION]->(next:State)
-                RETURN e, next.id AS next_id, e.id AS edge_id
-            """, current=current_id)
-            edges = list(result)
-
-        if not edges:
-            if verbose:
-                print(f"\n  Узел {current_id}: нет исходящих рёбер → КОНЕЦ")
-            return None
-
         candidates = []
-        for rec in edges:
-            edge_props = dict(rec['e'])
+        for item in edges:
+            edge_id, next_id, edge_props = item[0], item[1], item[2]
+            next_props = item[3] if len(item) > 3 else {}
             total_dev, em_dev, eth_dev = self.compute_total_deviation(edge_props)
+            admissible, failed = self.check_edge_conditions(edge_props)
             candidates.append({
-                'edge_id': rec['edge_id'],
-                'next_id': rec['next_id'],
+                'edge_id': edge_id,
+                'next_id': next_id,
                 'total_dev': total_dev,
                 'em_dev': em_dev,
                 'eth_dev': eth_dev,
+                'admissible': admissible,
+                'failed_conditions': failed,
+                'barrier': float(edge_props.get('barrier', self.DEFAULT_BARRIER)),
                 'props': edge_props,
+                'next_props': next_props,
             })
+        return candidates
+
+    def select_and_apply(self, current_id: str, candidates: List[dict],
+                         verbose: bool = False,
+                         mode: str = 'combined') -> Optional[StepResult]:
+        """
+        Выбрать ребро из кандидатов, применить обновления и вернуть StepResult.
+
+        Режим 'combined' (единственный):
+          Барьер выступает порогом осуществимости (хватает ли агенту
+          «ресурса» Sem + Seth на действие), а сумма отклонений —
+          мерой предпочтения. Допустимы рёбра, у которых выполняются
+          ВСЕ неравенства условий И преодолён барьер (Sem + Seth > β);
+          среди них выбирается минимальная ΣΔE; ничьи разрешаются
+          произвольно. Если таких рёбер нет — процесс завершается.
+        """
+        sem = self.emotional_model.compute_sem()
+        seth = self.ethical_model.compute_seth()
 
         if verbose:
             print(f"\n=== Узел {current_id}: {len(candidates)} исходящих рёбер ===")
+            print(f"  Sem = {sem}, Seth = {seth}, Sem + Seth = {round(sem + seth, 4)}")
             for c in sorted(candidates, key=lambda x: x['edge_id']):
+                status = "✓ допустимо" if c['admissible'] else "✗ НЕДОПУСТИМО"
                 print(f"  {c['edge_id']} → {c['next_id']} : "
                       f"ΣΔE = {c['total_dev']} "
-                      f"(эмоции: {c['em_dev']}, этика: {c['eth_dev']})")
+                      f"(эмоции: {c['em_dev']}, этика: {c['eth_dev']}), "
+                      f"β = {c['barrier']} [{status}]")
+                for cond in c['failed_conditions']:
+                    print(f"    нарушено: {cond}")
                 details = self.compute_deviation_details(c['props'])
                 for param, req, agent, dev in details:
                     print(f"    {param}: |{req} − {agent}| = {dev}")
 
-        min_dev = min(c['total_dev'] for c in candidates)
-        tied = [c for c in candidates if abs(c['total_dev'] - min_dev) < 1e-6]
+        # Осуществимость: выполнены все неравенства И преодолён барьер
+        feasible = [c for c in candidates
+                    if c['admissible'] and sem + seth > c['barrier']]
+        if not feasible:
+            if verbose:
+                print(f"  Узел {current_id}: ни одно ребро не проходит "
+                      f"одновременно по условиям и барьерам → КОНЕЦ")
+            return None
+        min_dev = min(c['total_dev'] for c in feasible)
+        tied = [c for c in feasible if abs(c['total_dev'] - min_dev) < 1e-6]
 
         if len(tied) > 1:
             chosen = random.choice(tied)
             if verbose:
                 tied_ids = ', '.join(c['edge_id'] for c in tied)
-                print(f"⚡ НИЧЬЯ: рёбра {tied_ids} имеют одинаковый ΣΔE = {min_dev}")
-                print(f"  Выбор произвольный (согласно статье: "
-                      f"'In case of equal values, the choice is made arbitrarily')")
-                print(f"→ ВЫБРАНО: {chosen['edge_id']} → {chosen['next_id']} "
-                      f"(ΣΔE = {chosen['total_dev']})")
+                print(f"⚡ НИЧЬЯ: рёбра {tied_ids} равнозначны — "
+                      f"выбор произвольный (согласно описанию: «в случае "
+                      f"равенства выбор осуществляется произвольно»)")
         else:
             chosen = tied[0]
-            if verbose:
-                print(f"→ ВЫБРАНО: {chosen['edge_id']} → {chosen['next_id']} "
-                      f"(ΣΔE = {chosen['total_dev']})")
+
+        if verbose:
+            print(f"→ ВЫБРАНО: {chosen['edge_id']} → {chosen['next_id']} "
+                  f"(ΣΔE = {chosen['total_dev']}, β = {chosen['barrier']})")
 
         deviation_details = self.compute_deviation_details(chosen['props'])
         self.path.append((current_id, chosen['edge_id'],
                           chosen['next_id'], chosen['total_dev']))
 
-        em_deltas, eth_deltas = self.apply_all_updates(chosen['props'], verbose=verbose)
+        em_deltas, eth_deltas = self.apply_all_updates(
+            chosen['props'], verbose=verbose,
+            node_props=chosen.get('next_props'))
 
         return StepResult(
             from_node=current_id,
@@ -254,12 +340,49 @@ class AgentNavigator:
             eth_deltas=eth_deltas,
             em_activations=list(self.emotional_model.last_activations),
             eth_activations=list(self.ethical_model.last_activations),
+            admissible=[c for c in candidates if c['admissible']],
+            mode=mode,
+            sem=sem,
+            seth=seth,
         )
+
+    def step(self, current_id: str, verbose: bool = False,
+             mode: str = 'combined') -> Optional[StepResult]:
+        """
+        Выполнить ОДИН шаг навигации из узла `current_id`.
+
+        Алгоритм:
+          1. Cypher-запрос исходящих рёбер `(:State {id})-[:TRANSITION]->(:State)`.
+          2. `build_candidates` — ΣΔE, допустимость, барьеры β.
+          3. `select_and_apply` — выбор ребра в режиме 'combined':
+             выполнение всех неравенств условий И Sem + Seth > β,
+             затем минимальная ΣΔE.
+
+        Возвращает `StepResult` или `None`, если из узла нет исходящих рёбер
+        либо ни одно ребро не проходит по условиям/барьерам.
+        """
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (current:State {id: $current})-[e:TRANSITION]->(next:State)
+                RETURN e, next.id AS next_id, e.id AS edge_id, next
+            """, current=current_id)
+            edges = [(rec['edge_id'], rec['next_id'], dict(rec['e']),
+                      dict(rec['next']))
+                     for rec in result]
+
+        if not edges:
+            if verbose:
+                print(f"\n  Узел {current_id}: нет исходящих рёбер → КОНЕЦ")
+            return None
+
+        candidates = self.build_candidates(edges)
+        return self.select_and_apply(current_id, candidates,
+                                     verbose=verbose, mode=mode)
 
     # ── Основной цикл навигации ────────────────────────────────────
 
     def navigate(self, start_id: str, agent_params: dict,
-                 verbose: bool = True) -> List[Tuple]:
+                 verbose: bool = True, mode: str = 'combined') -> List[Tuple]:
         """
         Основной цикл навигации по сценарной сети.
 
@@ -267,6 +390,8 @@ class AgentNavigator:
             start_id: идентификатор начального узла
             agent_params: характеристики агента (Tri(a,b,c) или float)
             verbose: подробный лог
+            mode: режим выбора ребра (всегда 'combined': все неравенства
+                  условий И Sem + Seth > β, затем минимальная ΣΔE)
 
         Returns:
             Список шагов [(from_node, edge_id, to_node, total_dev), ...]
@@ -282,7 +407,7 @@ class AgentNavigator:
             print(f"{'='*60}")
 
         while True:
-            result = self.step(current, verbose=verbose)
+            result = self.step(current, verbose=verbose, mode=mode)
             if result is None:
                 break
             current = result.to_node

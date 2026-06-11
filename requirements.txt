@@ -1,14 +1,18 @@
-# Зависимости для интерактивного Streamlit-приложения (app.py)
-# и трёх рабочих модулей (agent_navigator, emotional_model, ethical_model).
+# Зависимости для интерактивного Streamlit-приложения (app.py),
+# трёх ядровых модулей (agent_navigator, emotional_model, ethical_model)
+# и загрузчика сценария (seed_scenario.py).
 #
 # Установка:
 #   pip install -r requirements.txt
+#
+# Загрузка сценарной сети «Кредитный скоринг» в Neo4j:
+#   python seed_scenario.py
+# python seed_scenario.py --uri "neo4j+s://67842419.databases.neo4j.io" --user "67842419" --password "1bH9PGphIXQXqVNAkFTFEFkwXffBcK3ypTqQHAikcYU"
 #
 # Запуск приложения:
 #   streamlit run app.py
 
 neo4j==6.0.2
-streamlit>=1.32
+streamlit>=1.50.0
 pyvis>=0.3.2
 pandas>=2.0
-streamlit>=1.50.0

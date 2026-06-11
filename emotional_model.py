@@ -20,16 +20,22 @@ def tri_membership(x: float, a: float, b: float, c: float) -> float:
     Вычисляет степень принадлежности x к нечёткому множеству Tri(a, b, c).
 
     Tri(x; a, b, c) =
-        0,              если x <= a или x >= c
-        (x - a)/(b - a), если a < x <= b
+        0,               если x < a или x > c
+        1,               если x == b (включая вырожденные плечи a == b или b == c)
+        (x - a)/(b - a), если a < x < b
         (c - x)/(c - b), если b < x < c
+
+    Корректно обрабатывает «плечевые» термы с вырожденной стороной:
+    для low = (0, 0, 0.4) точка x = 0 даёт μ = 1, для high = (0.6, 1, 1)
+    точка x = 1 даёт μ = 1.
     """
-    if x <= a or x >= c:
+    if x < a or x > c:
         return 0.0
-    elif x <= b:
-        return (x - a) / (b - a) if b != a else 1.0
-    else:
-        return (c - x) / (c - b) if c != b else 1.0
+    if abs(x - b) < 1e-9:
+        return 1.0
+    if x < b:
+        return (x - a) / (b - a) if (b - a) > 1e-9 else 1.0
+    return (c - x) / (c - b) if (c - b) > 1e-9 else 1.0
 
 
 def get_peak(tri) -> float:
@@ -49,12 +55,14 @@ def make_tri(value) -> List[float]:
 
 
 def shift_tri(tri: List[float], delta: float) -> List[float]:
-    """Сдвигает всю треугольную функцию на delta: [a+δ, b+δ, c+δ]."""
-    return [
-        max(0.0, tri[0] + delta),
-        max(0.0, min(1.0, tri[1] + delta)),
-        min(1.0, tri[2] + delta),
-    ]
+    """
+    Сдвигает всю треугольную функцию на delta: [a+δ, b+δ, c+δ].
+
+    Каждая компонента ограничивается отрезком [0, 1]. Так как ограничение
+    монотонно и все три точки сдвигаются на одну и ту же дельту,
+    инвариант a ≤ b ≤ c сохраняется.
+    """
+    return [max(0.0, min(1.0, v + delta)) for v in tri]
 
 
 def format_tri(tri: List[float]) -> str:
@@ -77,67 +85,72 @@ EMOTION_TERMS = {
 #  TSK правила для эмоциональной модели (~20 правил)
 # ──────────────────────────────────────────────────────────────────────
 
+# Правила сформулированы преимущественно в термах 'medium' и 'low'
+# для эмоций, активных в сценарии (радость, гордость, страх, грусть,
+# вина, стыд, гнев, отвращение, удивление, сострадание): рабочий
+# диапазон пиков агента — примерно 0.15…0.65, поэтому условия 'high'
+# (μ > 0 только при пике > 0.6) почти никогда не активировались бы.
 EMOTION_TSK_RULES: List[dict] = [
-    {'id': 'ER01', 'conditions': {'joy': 'high', 'guilt': 'low'},
+    {'id': 'ER01', 'conditions': {'joy': 'medium', 'guilt': 'low'},
      'consequents': {'joy': (0.05, 1.0), 'pride': (0.03, 1.0)},
-     'description': 'Высокая радость при низкой вине → радость и гордость растут'},
-    {'id': 'ER02', 'conditions': {'joy': 'high', 'fear': 'high'},
-     'consequents': {'joy': (-0.1, 1.0), 'surprise': (0.05, 1.0)},
-     'description': 'Радость + страх → радость снижается, удивление растёт'},
-    {'id': 'ER03', 'conditions': {'joy': 'low', 'sadness': 'high'},
-     'consequents': {'joy': (-0.05, 1.0), 'hope': (-0.03, 1.0)},
-     'description': 'Низкая радость при высокой грусти → обе снижаются'},
-    {'id': 'ER04', 'conditions': {'joy': 'medium', 'gratitude': 'high'},
-     'consequents': {'joy': (0.08, 1.0), 'love': (0.04, 1.0)},
-     'description': 'Умеренная радость + благодарность → радость и любовь растут'},
-    {'id': 'ER05', 'conditions': {'fear': 'high', 'anger': 'low'},
-     'consequents': {'fear': (0.05, 1.0), 'sadness': (0.04, 1.0)},
-     'description': 'Сильный страх без гнева → страх и грусть растут'},
+     'description': 'Радость при низкой вине → радость и гордость растут'},
+    {'id': 'ER02', 'conditions': {'joy': 'medium', 'fear': 'medium'},
+     'consequents': {'joy': (-0.05, 1.0), 'surprise': (0.04, 1.0)},
+     'description': 'Радость + тревога → радость гасится, удивление растёт'},
+    {'id': 'ER03', 'conditions': {'joy': 'low', 'sadness': 'medium'},
+     'consequents': {'joy': (-0.03, 1.0), 'hope': (-0.03, 1.0)},
+     'description': 'Низкая радость при грусти → надежда снижается'},
+    {'id': 'ER04', 'conditions': {'joy': 'medium', 'compassion': 'medium'},
+     'consequents': {'compassion': (0.04, 1.0), 'joy': (0.03, 1.0)},
+     'description': 'Позитивный фон поддерживает сострадание'},
+    {'id': 'ER05', 'conditions': {'fear': 'medium', 'anger': 'low'},
+     'consequents': {'fear': (0.04, 1.0), 'sadness': (0.03, 1.0)},
+     'description': 'Тревога без гнева → страх и грусть растут'},
     {'id': 'ER06', 'conditions': {'fear': 'high', 'anger': 'high'},
      'consequents': {'fear': (-0.05, 1.0), 'anger': (0.06, 1.0)},
      'description': 'Страх + гнев → страх уступает гневу'},
-    {'id': 'ER07', 'conditions': {'fear': 'low', 'calmness': 'high'},
-     'consequents': {'fear': (-0.03, 1.0), 'calmness': (0.02, 1.0)},
-     'description': 'Низкий страх + спокойствие → устойчивое спокойствие'},
-    {'id': 'ER08', 'conditions': {'sadness': 'high', 'sympathy': 'high'},
-     'consequents': {'sadness': (-0.04, 1.0), 'sympathy': (0.03, 1.0)},
-     'description': 'Грусть + симпатия → грусть облегчается'},
-    {'id': 'ER09', 'conditions': {'sadness': 'high', 'guilt': 'high'},
-     'consequents': {'sadness': (0.06, 1.0), 'shame': (0.04, 1.0)},
-     'description': 'Грусть + вина → усиление обоих, стыд растёт'},
-    {'id': 'ER10', 'conditions': {'sadness': 'medium', 'nostalgia': 'high'},
-     'consequents': {'sadness': (0.02, 1.0), 'hope': (0.03, 1.0)},
-     'description': 'Умеренная грусть + ностальгия → надежда растёт'},
-    {'id': 'ER11', 'conditions': {'anger': 'high', 'contempt': 'high'},
-     'consequents': {'anger': (0.05, 1.0), 'disgust': (0.04, 1.0)},
-     'description': 'Гнев + презрение → усиление негативных эмоций'},
-    {'id': 'ER12', 'conditions': {'anger': 'high', 'guilt': 'medium'},
-     'consequents': {'anger': (-0.06, 1.0), 'guilt': (0.05, 1.0)},
+    {'id': 'ER07', 'conditions': {'fear': 'low', 'joy': 'medium'},
+     'consequents': {'calmness': (0.04, 1.0), 'fear': (-0.02, 1.0)},
+     'description': 'Низкий страх при радости → спокойствие растёт'},
+    {'id': 'ER08', 'conditions': {'sadness': 'medium', 'compassion': 'medium'},
+     'consequents': {'sadness': (-0.03, 1.0), 'compassion': (0.04, 1.0)},
+     'description': 'Грусть + сострадание → грусть облегчается, эмпатия растёт'},
+    {'id': 'ER09', 'conditions': {'sadness': 'medium', 'guilt': 'medium'},
+     'consequents': {'sadness': (0.04, 1.0), 'shame': (0.03, 1.0)},
+     'description': 'Грусть + вина → усиление обеих, стыд растёт'},
+    {'id': 'ER10', 'conditions': {'sadness': 'high', 'hope': 'low'},
+     'consequents': {'sadness': (0.03, 1.0), 'hope': (-0.04, 1.0)},
+     'description': 'Сильная грусть без надежды → отчаяние усиливается'},
+    {'id': 'ER11', 'conditions': {'anger': 'medium', 'disgust': 'medium'},
+     'consequents': {'anger': (0.04, 1.0), 'contempt': (0.03, 1.0)},
+     'description': 'Гнев + отвращение → презрение растёт'},
+    {'id': 'ER12', 'conditions': {'anger': 'medium', 'guilt': 'medium'},
+     'consequents': {'anger': (-0.05, 1.0), 'guilt': (0.04, 1.0)},
      'description': 'Гнев + вина → гнев снижается, вина растёт'},
-    {'id': 'ER13', 'conditions': {'guilt': 'high', 'shame': 'high'},
-     'consequents': {'guilt': (0.04, 1.0), 'sadness': (0.05, 1.0)},
+    {'id': 'ER13', 'conditions': {'guilt': 'medium', 'shame': 'medium'},
+     'consequents': {'guilt': (0.04, 1.0), 'sadness': (0.04, 1.0)},
      'description': 'Вина + стыд → усиление грусти'},
-    {'id': 'ER14', 'conditions': {'guilt': 'low', 'pride': 'high'},
-     'consequents': {'guilt': (-0.02, 1.0), 'pride': (0.03, 1.0)},
+    {'id': 'ER14', 'conditions': {'guilt': 'low', 'pride': 'medium'},
+     'consequents': {'guilt': (-0.02, 1.0), 'pride': (0.04, 1.0)},
      'description': 'Низкая вина + гордость → гордость укрепляется'},
-    {'id': 'ER15', 'conditions': {'pride': 'high', 'admiration': 'medium'},
-     'consequents': {'pride': (0.03, 1.0), 'joy': (0.04, 1.0)},
-     'description': 'Гордость + восхищение → радость растёт'},
-    {'id': 'ER16', 'conditions': {'love': 'high', 'jealousy': 'high'},
-     'consequents': {'love': (-0.04, 1.0), 'anger': (0.03, 1.0), 'fear': (0.02, 1.0)},
-     'description': 'Любовь + ревность → любовь снижается, гнев и страх растут'},
-    {'id': 'ER17', 'conditions': {'hope': 'high', 'fear': 'low'},
-     'consequents': {'hope': (0.04, 1.0), 'joy': (0.03, 1.0)},
-     'description': 'Надежда без страха → надежда и радость растут'},
-    {'id': 'ER18', 'conditions': {'hope': 'low', 'sadness': 'high'},
-     'consequents': {'hope': (-0.05, 1.0), 'sadness': (0.02, 1.0)},
-     'description': 'Низкая надежда + грусть → отчаяние усиливается'},
-    {'id': 'ER19', 'conditions': {'interest': 'high', 'surprise': 'medium'},
-     'consequents': {'interest': (0.03, 1.0), 'joy': (0.02, 1.0)},
-     'description': 'Интерес + удивление → интерес и радость растут'},
-    {'id': 'ER20', 'conditions': {'calmness': 'high', 'anger': 'low'},
-     'consequents': {'calmness': (0.03, 1.0), 'fear': (-0.02, 1.0)},
-     'description': 'Спокойствие без гнева → устойчивость растёт'},
+    {'id': 'ER15', 'conditions': {'pride': 'medium', 'joy': 'medium'},
+     'consequents': {'pride': (0.03, 1.0), 'joy': (0.03, 1.0)},
+     'description': 'Гордость + радость взаимно усиливаются'},
+    {'id': 'ER16', 'conditions': {'disgust': 'medium', 'sadness': 'medium'},
+     'consequents': {'disgust': (0.04, 1.0), 'compassion': (-0.03, 1.0)},
+     'description': 'Отвращение + грусть → эмпатия подавляется'},
+    {'id': 'ER17', 'conditions': {'surprise': 'medium', 'fear': 'medium'},
+     'consequents': {'surprise': (0.03, 1.0), 'interest': (0.03, 1.0)},
+     'description': 'Удивление + тревога → настороженный интерес'},
+    {'id': 'ER18', 'conditions': {'surprise': 'medium', 'joy': 'medium'},
+     'consequents': {'interest': (0.04, 1.0), 'joy': (0.02, 1.0)},
+     'description': 'Удивление + радость → интерес растёт'},
+    {'id': 'ER19', 'conditions': {'compassion': 'high', 'sadness': 'medium'},
+     'consequents': {'compassion': (0.03, 1.0), 'sadness': (-0.02, 1.0)},
+     'description': 'Сильное сострадание смягчает грусть'},
+    {'id': 'ER20', 'conditions': {'shame': 'medium', 'guilt': 'medium'},
+     'consequents': {'shame': (0.03, 1.0), 'sadness': (0.03, 1.0)},
+     'description': 'Стыд + вина → грусть растёт'},
 ]
 
 
@@ -150,7 +163,19 @@ ALL_EMOTIONS = [
     'fear', 'sadness', 'shame', 'guilt', 'anger',
     'disgust', 'envy', 'jealousy',
     'surprise', 'calmness', 'interest', 'contempt',
-    'nostalgia', 'sympathy', 'gratitude',
+    'nostalgia', 'compassion', 'gratitude',
+]
+
+# Валентность эмоций — используется при вычислении общего
+# эмоционального состояния Sem (см. EmotionalModel.compute_sem).
+# 'surprise' считается нейтральной и не входит ни в одну группу.
+POSITIVE_EMOTIONS = [
+    'joy', 'pride', 'admiration', 'love', 'hope',
+    'calmness', 'interest', 'nostalgia', 'compassion', 'gratitude',
+]
+NEGATIVE_EMOTIONS = [
+    'fear', 'sadness', 'shame', 'guilt', 'anger',
+    'disgust', 'envy', 'jealousy', 'contempt',
 ]
 
 # Нулевая тройка
@@ -271,6 +296,23 @@ class EmotionalModel:
                 if emotion_name in self.state:
                     self.state[emotion_name] = shift_tri(
                         self.state[emotion_name], float(delta))
+
+    def compute_sem(self) -> float:
+        """
+        Вычислить результирующее общее эмоциональное состояние Sem ∈ [0, 1].
+
+        Sem = 0.5 + (mean_pos − mean_neg) / 2, где mean_pos и mean_neg —
+        средние пиковые значения позитивных и негативных эмоций
+        (списки POSITIVE_EMOTIONS / NEGATIVE_EMOTIONS).
+        Значение 0.5 — нейтральное состояние; > 0.5 — преобладает
+        позитивный фон, < 0.5 — негативный.
+
+        Используется в режиме выбора действия по барьерам активации:
+        Sem + Seth > β_i.
+        """
+        mean_pos = sum(self.get_peak(e) for e in POSITIVE_EMOTIONS) / len(POSITIVE_EMOTIONS)
+        mean_neg = sum(self.get_peak(e) for e in NEGATIVE_EMOTIONS) / len(NEGATIVE_EMOTIONS)
+        return round(0.5 + (mean_pos - mean_neg) / 2.0, 4)
 
     def compute_deviation(self, edge_props: dict) -> float:
         """Вычислить ΣΔE для эмоциональных условий ребра (по пикам)."""

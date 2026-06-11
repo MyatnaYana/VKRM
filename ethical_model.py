@@ -22,9 +22,13 @@ ETHIC_TERMS = {
     'high':   (0.6, 1.0, 1.0),
 }
 
+# 7 этических переменных сценария:
+#   responsibility — свобода и ответственность; goodness — добро;
+#   conscience — совесть; evil — зло; honesty — честность;
+#   justice — справедливость; fairness — порядочность.
 ALL_ETHICS = [
     'responsibility', 'goodness', 'conscience', 'evil',
-    'honesty', 'fairness', 'integrity',
+    'honesty', 'justice', 'fairness',
 ]
 
 
@@ -43,16 +47,16 @@ ETHIC_TSK_RULES: List[dict] = [
      'description': 'Высокое зло без совести → зло растёт, добро падает'},
     {'id': 'ETH03', 'priority': 1,
      'conditions': {'evil': 'low', 'goodness': 'high'},
-     'consequents': {'goodness': (0.03, 1.0), 'integrity': (0.02, 1.0)},
-     'description': 'Низкое зло + добро → добро и порядочность укрепляются'},
+     'consequents': {'goodness': (0.03, 1.0), 'justice': (0.02, 1.0)},
+     'description': 'Низкое зло + добро → добро и справедливость укрепляются'},
     {'id': 'ETH04', 'priority': 2,
      'conditions': {'honesty': 'high', 'fairness': 'high'},
-     'consequents': {'integrity': (0.06, 1.0), 'responsibility': (0.03, 1.0)},
-     'description': 'Честность + справедливость → порядочность и ответственность растут'},
+     'consequents': {'justice': (0.06, 1.0), 'responsibility': (0.03, 1.0)},
+     'description': 'Честность + порядочность → справедливость и ответственность растут'},
     {'id': 'ETH05', 'priority': 2,
      'conditions': {'honesty': 'low', 'fairness': 'low'},
-     'consequents': {'integrity': (-0.08, 1.0), 'evil': (0.04, 1.0)},
-     'description': 'Нечестность + несправедливость → порядочность падает, зло растёт'},
+     'consequents': {'justice': (-0.08, 1.0), 'evil': (0.04, 1.0)},
+     'description': 'Нечестность + непорядочность → справедливость падает, зло растёт'},
     {'id': 'ETH06', 'priority': 2,
      'conditions': {'honesty': 'high', 'evil': 'low'},
      'consequents': {'goodness': (0.04, 1.0), 'conscience': (0.02, 1.0)},
@@ -66,9 +70,9 @@ ETHIC_TSK_RULES: List[dict] = [
      'consequents': {'conscience': (-0.05, 1.0), 'evil': (0.03, 1.0)},
      'description': 'Безответственность + отсутствие добра → совесть падает'},
     {'id': 'ETH09', 'priority': 3,
-     'conditions': {'integrity': 'high', 'responsibility': 'medium'},
+     'conditions': {'justice': 'high', 'responsibility': 'medium'},
      'consequents': {'responsibility': (0.05, 1.0), 'fairness': (0.02, 1.0)},
-     'description': 'Порядочность стимулирует рост ответственности'},
+     'description': 'Справедливость стимулирует рост ответственности'},
     {'id': 'ETH10', 'priority': 3,
      'conditions': {'conscience': 'medium', 'goodness': 'medium'},
      'consequents': {'conscience': (0.02, 1.0), 'honesty': (0.02, 1.0)},
@@ -193,6 +197,22 @@ class EthicalModel:
                 if ethic_name in self.state:
                     self.state[ethic_name] = shift_tri(
                         self.state[ethic_name], float(delta))
+
+    def compute_seth(self) -> float:
+        """
+        Вычислить окончательную этическую оценку Seth ∈ [0, 1].
+
+        Seth = 0.5 + (mean_virtues − evil) / 2, где mean_virtues — среднее
+        пиковых значений всех «добродетельных» переменных (все, кроме evil),
+        а evil — пиковое значение зла. Значение 0.5 — нейтральная оценка;
+        > 0.5 — этичное состояние, < 0.5 — неэтичное.
+
+        Используется в режиме выбора действия по барьерам активации:
+        Sem + Seth > β_i.
+        """
+        virtues = [e for e in ALL_ETHICS if e != 'evil']
+        mean_virtues = sum(self.get_peak(e) for e in virtues) / len(virtues)
+        return round(0.5 + (mean_virtues - self.get_peak('evil')) / 2.0, 4)
 
     def compute_deviation(self, edge_props: dict) -> float:
         """Вычислить ΣΔE для этических условий ребра (по пикам)."""
